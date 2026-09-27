@@ -1,0 +1,127 @@
+{
+  "realm": "bloodapp",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": true,
+  "registrationEmailAsUsername": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "verifyEmail": false,
+  "accessTokenLifespan": 300,
+  "roles": {
+    "realm": [
+      {
+        "name": "donor",
+        "description": "Every registered user. Can create posts, donate, chat."
+      },
+      {
+        "name": "hospital_staff",
+        "description": "Hospital personnel. Can verify donations by scanning QR codes. Assigned only by an admin."
+      },
+      {
+        "name": "admin",
+        "description": "Platform administrator."
+      },
+      {
+        "name": "offline_access",
+        "description": "${role_offline-access}"
+      },
+      {
+        "name": "uma_authorization",
+        "description": "${role_uma_authorization}"
+      },
+      {
+        "name": "default-roles-bloodapp",
+        "description": "Roles every new user receives on registration. Keycloak ignores composites under \"defaultRole\" on import, so they are declared here.",
+        "composite": true,
+        "composites": {
+          "realm": ["donor", "offline_access", "uma_authorization"],
+          "client": {
+            "account": ["view-profile", "manage-account"]
+          }
+        }
+      }
+    ]
+  },
+  "defaultRole": {
+    "name": "default-roles-bloodapp"
+  },
+  "clients": [
+    {
+      "clientId": "bloodapp-mobile",
+      "name": "BloodApp Mobile",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["bloodapp://auth/callback", "http://localhost:*"],
+      "webOrigins": ["+"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "bloodapp://auth/logout##http://localhost:*"
+      },
+      "protocolMappers": [
+        {
+          "name": "bloodapp-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "bloodapp-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "realm-roles-flat",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "donor@bloodapp.local",
+      "email": "donor@bloodapp.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Test",
+      "lastName": "Donor",
+      "credentials": [{ "type": "password", "value": "donor123", "temporary": false }],
+      "realmRoles": ["default-roles-bloodapp"]
+    },
+    {
+      "username": "staff@bloodapp.local",
+      "email": "staff@bloodapp.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Test",
+      "lastName": "Staff",
+      "credentials": [{ "type": "password", "value": "staff123", "temporary": false }],
+      "realmRoles": ["default-roles-bloodapp", "hospital_staff"]
+    },
+    {
+      "username": "admin@bloodapp.local",
+      "email": "admin@bloodapp.local",
+      "emailVerified": true,
+      "enabled": true,
+      "firstName": "Test",
+      "lastName": "Admin",
+      "credentials": [{ "type": "password", "value": "admin123", "temporary": false }],
+      "realmRoles": ["default-roles-bloodapp", "admin"]
+    }
+  ]
+}

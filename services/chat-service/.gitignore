@@ -1,0 +1,28 @@
+# Python virtual environments
+env/
+venv/
+.venv/
+
+# IDE files
+.vscode/
+.idea/
+
+# Compiled Python files
+__pycache__/
+*.py[cod]
+
+# Log files
+*.log
+
+# Environment variables
+.env
+
+# Test reports
+htmlcov/
+.coverage
+coverage.xml
+.pytest_cache/
+
+# General
+.DS_Store
+*.swp

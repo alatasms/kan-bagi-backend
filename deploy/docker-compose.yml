@@ -1,0 +1,210 @@
+# Local development stack.
+#   cd deploy && cp .env.example .env && docker compose up --build
+#
+# Only the gateway is reachable from outside. Infrastructure ports are bound to 127.0.0.1
+# so services can also be run with `dotnet run` against them; application services expose no ports.
+
+name: bloodapp
+
+x-dotnet-service: &dotnet-service
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+    keycloak:
+      condition: service_started
+
+# Every service validates tokens itself. The issuer is the public Keycloak URL (what clients see);
+# signing keys are fetched over the internal network.
+x-auth-env: &auth-env
+  Auth__Authority: ${KEYCLOAK_PUBLIC_URL:?set in .env}/realms/bloodapp
+  Auth__MetadataAddress: http://keycloak:8080/realms/bloodapp/.well-known/openid-configuration
+  Auth__Audience: bloodapp-api
+  Auth__RequireHttpsMetadata: "false"
+
+services:
+  # ---------- infrastructure ----------
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:4.1-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?set in .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set in .env}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # Distributed tracing: services export OTLP here; UI at http://localhost:16686
+  jaeger:
+    image: jaegertracing/jaeger:2.21.0
+    ports:
+      - "127.0.0.1:16686:16686"
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "127.0.0.1:27017:27017"
+
+  # Catches every email sent in development; open http://localhost:8025 to read them.
+  mailpit:
+    image: axllent/mailpit:v1.31
+    ports:
+      - "127.0.0.1:8025:8025"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:?set in .env}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set in .env}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: ${POSTGRES_USER}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      # Tokens always carry the public URL as issuer; services reach Keycloak internally as keycloak:8080.
+      KC_HOSTNAME: ${KEYCLOAK_PUBLIC_URL}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HTTP_ENABLED: "true"
+    volumes:
+      - ./keycloak/bloodapp-realm.json:/opt/keycloak/data/import/bloodapp-realm.json:ro
+    ports:
+      - "${KEYCLOAK_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ---------- application services ----------
+  user-service:
+    <<: *dotnet-service
+    build:
+      context: ../services/user-service
+      dockerfile: src/UserService.API/Dockerfile
+    environment:
+      <<: *auth-env
+      ConnectionStrings__Default: Host=postgres;Port=5432;Database=userservice;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      MessageBroker__RabbitMQ__Host: rabbitmq
+      MessageBroker__RabbitMQ__Username: ${RABBITMQ_USER}
+      MessageBroker__RabbitMQ__Password: ${RABBITMQ_PASSWORD}
+      IdentityVerification__Provider: ${IDENTITY_VERIFICATION_PROVIDER:-None}
+      IdentityVerification__HashKey: ${IDENTITY_HASH_KEY:-}
+      Otlp__Endpoint: http://jaeger:4317
+
+  post-service:
+    <<: *dotnet-service
+    build:
+      context: ../services/post-service
+      dockerfile: src/PostService.API/Dockerfile
+    environment:
+      <<: *auth-env
+      ConnectionStrings__Default: Host=postgres;Port=5432;Database=postservice;Username=${POSTGRES_USER};Password=${POSTGRES_PASSWORD}
+      MessageBroker__RabbitMQ__Host: rabbitmq
+      MessageBroker__RabbitMQ__Username: ${RABBITMQ_USER}
+      MessageBroker__RabbitMQ__Password: ${RABBITMQ_PASSWORD}
+      Posts__ActiveDuration: ${POST_ACTIVE_DURATION:-3.00:00:00}
+      Posts__ExpiryCheckInterval: ${POST_EXPIRY_CHECK_INTERVAL:-00:01:00}
+      Otlp__Endpoint: http://jaeger:4317
+
+  gateway:
+    build:
+      context: ../services/gateway
+    restart: unless-stopped
+    environment:
+      <<: *auth-env
+      Otlp__Endpoint: http://jaeger:4317
+    ports:
+      - "${GATEWAY_PORT:-8000}:8080"
+    depends_on:
+      - user-service
+      - post-service
+      - chat-service
+      - matching-service
+
+  notification-service:
+    build:
+      context: ../services/notification-service
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      MONGODB_URI_ADDRESS: mongodb://mongo:27017
+      MONGODB_NOTIFICATION_DB_NAME: notification
+      # Credentials containing special characters must be URL-encoded here.
+      RABBITMQ_URI: amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      EMAIL_SERVER_ADDRESS: ${SMTP_HOST:-mailpit}
+      EMAIL_PORT_ADDRESS: ${SMTP_PORT:-1025}
+      EMAIL_USE_TLS: ${SMTP_USE_TLS:-false}
+      EMAIL_SENDER_USERNAME: ${SMTP_USERNAME:-}
+      EMAIL_SENDER_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAIL_FROM: ${SMTP_FROM:-noreply@bloodapp.local}
+      SUPPORT_EMAIL: ${SUPPORT_EMAIL:-}
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mongo:
+        condition: service_started
+
+  chat-service:
+    build:
+      context: ../services/chat-service
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      MONGO_URI: mongodb://mongo:27017
+      AUTH_ISSUER: ${KEYCLOAK_PUBLIC_URL}/realms/bloodapp
+      AUTH_JWKS_URL: http://keycloak:8080/realms/bloodapp/protocol/openid-connect/certs
+      AUTH_AUDIENCE: bloodapp-api
+    depends_on:
+      mongo:
+        condition: service_started
+      keycloak:
+        condition: service_started
+
+  matching-service:
+    build:
+      context: ../services/matching-service
+    restart: unless-stopped
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/matching
+      DB_USERNAME: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      AUTH_ISSUER: ${KEYCLOAK_PUBLIC_URL}/realms/bloodapp
+      AUTH_JWKS_URI: http://keycloak:8080/realms/bloodapp/protocol/openid-connect/certs
+      AUTH_AUDIENCE: bloodapp-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_started
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+  mongo-data:

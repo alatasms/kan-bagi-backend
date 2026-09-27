@@ -1,0 +1,13 @@
+# Never bake secrets, VCS data or local build output into images.
+.env
+*.env
+.git
+.gitignore
+.vs
+.vscode
+.idea
+**/Dockerfile*
+**/.dockerignore
+**/bin
+**/obj
+**/*.user

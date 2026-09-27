@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en" xml:lang="en">
+    <head>
+        <title>Private Chat</title>
+        <script>
+            // WebSocket configuration
+            const WS_BASE_URL = window.location.hostname + ':' + window.location.port;
+            
+            // Update displayed URL when page loads
+            window.onload = function() {
+                document.getElementById('wsUrl').textContent = 'ws://' + WS_BASE_URL;
+            };
+        </script>
+    </head>
+    <body>
+        <div style="background-color: #f0f0f0; padding: 10px; margin-bottom: 20px;">
+            <strong>WebSocket URL:</strong> <span id="wsUrl">ws://${WS_BASE_URL}</span>
+        </div>
+        <h1>Private Chat Room</h1>
+        <form action="" onsubmit="connect(event)">
+            <input type="text" id="userId" placeholder="Your User ID"/>
+            <input type="text" id="roomId" placeholder="Room ID"/>
+            <button>Connect</button>
+        </form>
+        <form action="" onsubmit="sendMessage(event)" id="messageForm" style="display: none;">
+            <input type="text" id="messageText" placeholder="Message" autocomplete="off"/>
+            <button>Send</button>
+        </form>
+        <ul id='messages'>
+        </ul>
+        <script>
+            var ws = null;
+
+            function connect(event) {
+                event.preventDefault();
+                var userId = document.getElementById("userId").value;
+                var roomId = document.getElementById("roomId").value;
+                
+                ws = new WebSocket(`ws://${WS_BASE_URL}/api/chat/ws/${roomId}/${userId}`);
+                
+                ws.onmessage = function(event) {
+                    var messages = document.getElementById('messages');
+                    var message = document.createElement('li');
+                    var content = document.createTextNode(event.data);
+                    message.appendChild(content);
+                    messages.appendChild(message);
+                };
+
+                ws.onopen = function() {
+                    document.getElementById('messageForm').style.display = 'block';
+                };
+
+                return false;
+            }
+
+            function sendMessage(event) {
+                var input = document.getElementById("messageText");
+                var userId = document.getElementById("userId").value;
+                var roomId = document.getElementById("roomId").value;
+                
+                ws.send(JSON.stringify({
+                    sender_user_id: userId,
+                    content: input.value,
+                    room_id: roomId
+                }));
+                input.value = '';
+                event.preventDefault();
+            }
+        </script>
+    </body>
+</html>
